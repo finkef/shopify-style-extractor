@@ -127,73 +127,40 @@ export async function getStyles(
     })
 
     // Hide all images and videos; return the page height and shopify theme
-    const { pageHeight, theme } = await page.evaluate(() => {
-      const mediaElements = document.querySelectorAll(
-        'img, video, [style*="background-image"]',
-      )
-      mediaElements.forEach((element) => {
+    const { pageHeight, theme } = await page.evaluate(
+      (themes: typeof THEMES) => {
+        const mediaElements = document.querySelectorAll(
+          'img, video, [style*="background-image"]',
+        )
+        mediaElements.forEach((element) => {
+          // @ts-ignore
+          element.style.background = "transparent"
+          // @ts-ignore
+          element.style.opacity = "0"
+        })
+
+        // Matching theme
+        let theme: string | null = null
+
         // @ts-ignore
-        element.style.background = "transparent"
-        // @ts-ignore
-        element.style.opacity = "0"
-      })
+        if (window.Shopify?.theme) {
+          theme =
+            themes.find(
+              (t) =>
+                // @ts-ignore
+                t.schema_name === window.Shopify?.theme?.schema_name ||
+                // @ts-ignore
+                t.theme_store_id === window.Shopify?.theme?.theme_store_id,
+            )?.name || null
+        }
 
-      /**
-       * Need to explicitly define the themes here so puppeteer can access them.
-       */
-      const THEMES = [
-        {
-          name: "Dawn",
-          schema_name: "Dawn",
-          theme_store_id: 887,
-          buttonSelector: ".button--primary",
-        },
-        {
-          name: "Prestige",
-          schema_name: "Prestige",
-          theme_store_id: 855,
-          buttonSelector: ".Button--primary",
-        },
-        {
-          name: "Broadcast",
-          schema_name: "Broadcast",
-          theme_store_id: 868,
-          buttonSelector: ".btn--primary",
-        },
-        {
-          name: "Palo Alto",
-          schema_name: "palo-alto",
-          theme_store_id: 777,
-          buttonSelector: ".btn--primary",
-        },
-        {
-          name: "Modular",
-          schema_name: "modular",
-          theme_store_id: 849,
-          buttonSelector: ".btn--primary",
-        },
-      ]
-
-      // Matching theme
-      let theme: string | null = null
-
-      // @ts-ignore
-      if (window.Shopify?.theme) {
-        theme =
-          THEMES.find(
-            (t) =>
-              // @ts-ignore
-              t.schema_name === window.Shopify?.theme?.schema_name ||
-              // @ts-ignore
-              t.theme_store_id === window.Shopify?.theme?.theme_store_id,
-          )?.name || null
-      }
-
-      return {
-        pageHeight: document.documentElement.scrollHeight,
-        theme,
-      }
-    })
+        return {
+          pageHeight: document.documentElement.scrollHeight,
+          theme,
+        }
+      },
+      THEMES,
+    )
 
     if (options.removeOverlays ?? DEFAULT_OPTIONS.removeOverlays) {
       await removeOverlays(page)
@@ -262,8 +229,9 @@ export async function getStyles(
       palette,
       backgroundColor: rgbToHex(bgRGB.r, bgRGB.g, bgRGB.b),
       // Favor the theme primary button if it exists, otherwise use the best button found.
-      primaryButton:
+      primaryButton: applyMinPadding(
         themePrimaryButton ?? primaryButton ?? DEFAULT_BUTTON_STYLE,
+      ),
     }
   } finally {
     // fs.unlinkSync(screenshotFile)
@@ -384,6 +352,43 @@ async function getButtons(page: Page) {
   })
 }
 
+function applyMinPadding(btn: ExtractedShopStyles["primaryButton"]) {
+  const padding = btn.padding
+
+  try {
+    // Split padding into parts and normalize to 4 values
+    const parts = padding.split(" ").map((p) => Number.parseInt(p))
+    let [top, right, bottom, left] = [0, 0, 0, 0]
+
+    if (parts.length === 1) {
+      // Single value applies to all sides
+      top = right = bottom = left = parts[0]
+    } else if (parts.length === 2) {
+      // First value is top/bottom, second is left/right
+      top = bottom = parts[0]
+      right = left = parts[1]
+    } else if (parts.length === 3) {
+      // First is top, second is left/right, third is bottom
+      top = parts[0]
+      right = left = parts[1]
+      bottom = parts[2]
+    } else if (parts.length === 4) {
+      // Four distinct values
+      ;[top, right, bottom, left] = parts
+    }
+
+    // Apply minimum padding to each side
+    const newPadding = `${Math.max(top, 8)}px ${Math.max(right, 12)}px ${Math.max(bottom, 8)}px ${Math.max(left, 12)}px`
+
+    return {
+      ...btn,
+      padding: newPadding,
+    }
+  } catch (error) {
+    return btn
+  }
+}
+
 /**
  * Calculate the score of a button.
  */
@@ -438,7 +443,7 @@ function calculateButtonScore(
 
   // Penalize short text
   if (btnStyle.textContent.trim().length < 3) {
-    score -= 5
+    score -= 30
   }
 
   return score
@@ -528,8 +533,8 @@ async function findButtonBasedOnTheme(page: Page, schemaName?: string | null) {
   const theme = THEMES.find((t) => t.schema_name === schemaName)
   if (!theme) return null
 
-  const button = await page.evaluate(() => {
-    const btn = document.querySelector(theme.buttonSelector)
+  const button = await page.evaluate((selector: string) => {
+    const btn = document.querySelector(selector)
     if (!btn) return null
 
     const style = window.getComputedStyle(btn)
@@ -554,7 +559,7 @@ async function findButtonBasedOnTheme(page: Page, schemaName?: string | null) {
       },
       textContent,
     }
-  })
+  }, theme.buttonSelector)
 
   return button
 }
